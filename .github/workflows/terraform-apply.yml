@@ -1,45 +1,62 @@
 name: "Terraform Apply"
 
 on:
-  push:
-    branches:
-      - main
-
-env:
-  TF_CLOUD_ORGANIZATION: "sawblade"
-  TF_API_TOKEN: "${{ secrets.TF_API_TOKEN }}"
-  TF_WORKSPACE: "learn-terraform-github-actions"
-  CONFIG_DIRECTORY: "./"
+  pull_request:
+    types: [ closed ]
 
 jobs:
   terraform:
-    if: github.repository != 'hashicorp-education/learn-terraform-github-actions'
-    name: "Terraform Apply"
+    if: github.event.pull_request.merged == true
+    name: "Terraform"
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
+      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Upload Configuration
-        uses: hashicorp/tfc-workflows-github/actions/upload-configuration@v1.0.0
-        id: apply-upload
+      - name: 'Authenticate with Google Cloud'
+        # https://cloud.google.com/blog/products/identity-security/enabling-keyless-authentication-from-github-actions
+        id: auth
+        uses: google-github-actions/auth@v2
         with:
-          workspace: ${{ env.TF_WORKSPACE }}
-          directory: ${{ env.CONFIG_DIRECTORY }}
+          workload_identity_provider: "projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/my-pool/providers/my-provider"
+          service_account: 'terraform@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com'
+          export_environment_variables: true
 
-      - name: Create Apply Run
-        uses: hashicorp/tfc-workflows-github/actions/create-run@v1.0.0
-        id: apply-run
-        with:
-          workspace: ${{ env.TF_WORKSPACE }}
-          configuration_version: ${{ steps.apply-upload.outputs.configuration_version_id }}
+      - name: 'Setup terraform'
+        uses: hashicorp/setup-terraform@v3
 
-      - name: Apply
-        uses: hashicorp/tfc-workflows-github/actions/apply-run@v1.0.0
-        if: fromJSON(steps.apply-run.outputs.payload).data.attributes.actions.IsConfirmable
-        id: apply
+      - name: 'Terraform init'
+        env:
+          ENV_NAME: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+        run: |
+          terraform init -backend-config="bucket=${GOOGLE_CLOUD_PROJECT}-terraformstate" -backend-config="prefix=${GITHUB_REPOSITORY%%/*}-${ENV_NAME}"
+
+      - name: 'Terraform plan'
+        run: terraform plan -no-color -out last.tfplan
+
+      - name: 'Terraform apply'
+        id: terraform_apply
+        run: terraform apply -auto-approve last.tfplan
+
+      - name: "Add plan as comment to PR"
+        # See https://github.com/actions/github-script?tab=readme-ov-file#actionsgithub-script
+        uses: actions/github-script@v6
         with:
-          run: ${{ steps.apply-run.outputs.run_id }}
-          comment: "Apply Run from GitHub Actions CI ${{ github.sha }}"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const body = 
+            `#### Terraform Apply Output
+            \`\`\`hcl
+            ${{ steps.terraform_apply.outputs.stdout }}
+            \`\`\`
+            `;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body,
+            });
