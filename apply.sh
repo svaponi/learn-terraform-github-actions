@@ -20,6 +20,6 @@ fi
 GOOGLE_CLOUD_PROJECT=$(gcloud config get-value project)
 
 rm -rf .terraform/terraform.tfstate
-terraform init -backend-config="bucket=${GOOGLE_CLOUD_PROJECT}-terraformstate" -backend-config="prefix=${GITHUB_REPOSITORY%%/*}-${ENV_NAME}"
+terraform init -backend-config="bucket=${GOOGLE_CLOUD_PROJECT}-terraformstate" -backend-config="prefix=${GITHUB_REPOSITORY#*/}-${ENV_NAME}"
 terraform plan -out last.tfplan
 terraform apply -auto-approve last.tfplan
