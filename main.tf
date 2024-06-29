@@ -40,7 +40,7 @@ resource "google_compute_instance" "webserver" {
 }
 
 resource "google_compute_firewall" "allow-http-to-webserver" {
-  name    = "allow-http"
+  name    = "allow-http-to-webserver"
   network = "default"
 
   allow {

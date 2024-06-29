@@ -30,9 +30,9 @@ jobs:
 
       - name: 'Terraform init'
         env:
-          ENV_NAME: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+          ENV_NAME: ${{ github.base_ref == 'main' && 'production' || 'development' }}
         run: |
-          terraform init -backend-config="bucket=${GOOGLE_CLOUD_PROJECT}-terraformstate" -backend-config="prefix=${GITHUB_REPOSITORY%%/*}-${ENV_NAME}"
+          terraform init -backend-config="bucket=${GOOGLE_CLOUD_PROJECT}-terraformstate" -backend-config="prefix=${GITHUB_REPOSITORY#*/}-${ENV_NAME}"
 
       - name: 'Terraform plan'
         id: terraform_plan
