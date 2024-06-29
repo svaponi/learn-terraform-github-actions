@@ -2,69 +2,56 @@ name: "Terraform Plan"
 
 on:
   pull_request:
-
-env:
-  TF_CLOUD_ORGANIZATION: "YOUR-ORGANIZATION-HERE"
-  TF_API_TOKEN: "${{ secrets.TF_API_TOKEN }}"
-  TF_WORKSPACE: "learn-terraform-github-actions"
-  CONFIG_DIRECTORY: "./"
+    types: [ opened, edited, synchronize, reopened ]
 
 jobs:
   terraform:
-    if: github.repository != 'hashicorp-education/learn-terraform-github-actions'
-    name: "Terraform Plan"
+    name: "Terraform"
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
       pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Upload Configuration
-        uses: hashicorp/tfc-workflows-github/actions/upload-configuration@v1.0.0
-        id: plan-upload
+      - name: 'Authenticate with Google Cloud'
+        # https://cloud.google.com/blog/products/identity-security/enabling-keyless-authentication-from-github-actions
+        id: auth
+        uses: google-github-actions/auth@v2
         with:
-          workspace: ${{ env.TF_WORKSPACE }}
-          directory: ${{ env.CONFIG_DIRECTORY }}
-          speculative: true
+          workload_identity_provider: "projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/my-pool/providers/my-provider"
+          service_account: 'terraform@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com'
+          export_environment_variables: true
 
-      - name: Create Plan Run
-        uses: hashicorp/tfc-workflows-github/actions/create-run@v1.0.0
-        id: plan-run
-        with:
-          workspace: ${{ env.TF_WORKSPACE }}
-          configuration_version: ${{ steps.plan-upload.outputs.configuration_version_id }}
-          plan_only: true
+      - name: 'Setup terraform'
+        uses: hashicorp/setup-terraform@v3
 
-      - name: Get Plan Output
-        uses: hashicorp/tfc-workflows-github/actions/plan-output@v1.0.0
-        id: plan-output
-        with:
-          plan: ${{ fromJSON(steps.plan-run.outputs.payload).data.relationships.plan.data.id }}
+      - name: 'Terraform init'
+        env:
+          ENV_NAME: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+        run: |
+          terraform init -backend-config="bucket=${GOOGLE_CLOUD_PROJECT}-terraformstate" -backend-config="prefix=${GITHUB_REPOSITORY%%/*}-${ENV_NAME}"
 
-      - name: Update PR
+      - name: 'Terraform plan'
+        id: terraform_plan
+        run: terraform plan -no-color
+
+      - name: "Add plan as comment to PR"
+        # See https://github.com/actions/github-script?tab=readme-ov-file#actionsgithub-script
         uses: actions/github-script@v6
-        id: plan-comment
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            // 1. Retrieve existing bot comments for the PR
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
             });
             const botComment = comments.find(comment => {
-              return comment.user.type === 'Bot' && comment.body.includes('Terraform Cloud Plan Output')
+              return comment.user.type === 'Bot' && comment.body.includes('Terraform Plan Output')
             });
-            const output = `#### Terraform Cloud Plan Output
-               \`\`\`
-               Plan: ${{ steps.plan-output.outputs.add }} to add, ${{ steps.plan-output.outputs.change }} to change, ${{ steps.plan-output.outputs.destroy }} to destroy.
-               \`\`\`
-               [Terraform Cloud Plan](${{ steps.plan-run.outputs.run_link }})
-               `;
-            // 3. Delete previous comment so PR timeline makes sense
             if (botComment) {
               github.rest.issues.deleteComment({
                 owner: context.repo.owner,
@@ -72,9 +59,15 @@ jobs:
                 comment_id: botComment.id,
               });
             }
+            const body = 
+            `#### Terraform Plan Output
+            \`\`\`hcl
+            ${{ steps.terraform_plan.outputs.stdout }}
+            \`\`\`
+            `;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: output
+              body: body,
             });
